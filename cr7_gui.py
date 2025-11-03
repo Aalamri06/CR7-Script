@@ -7,7 +7,7 @@ import sys
 # ⚽ CR7 SCRIPT LEXER
 # -----------------------------
 KEYWORDS = {
-    "FUNCTION": ["play", "kickoff", "whistle", "train"],
+    "FUNCTION": ["play", "kickoff", "whistle"],
     "TYPE": ["goal", "player", "flag", "match"],
     "CONTROL": ["referee", "bench", "practice", "drill"],
     "OUTPUT": ["announce"],
@@ -28,14 +28,13 @@ token_specification = [
     ("RBRACE",   r"\}"),
     ("STRING",   r'"[^"]*"'),
     ("ID",       r"[A-Za-z_]\w*"),
-    ("OP",       r"\+\+|--|[+\-*/<>!=]+"),  # handle ++ and -- first
+    ("OP",       r"[+\-*/<>!=]+"),
     ("NEWLINE",  r"\n"),
     ("SKIP",     r"[ \t]+"),
     ("MISMATCH", r"."),
 ]
 
 token_regex = "|".join(f"(?P<{name}>{pattern})" for name, pattern in token_specification)
-
 
 def tokenize(code):
     tokens = []
@@ -45,23 +44,17 @@ def tokenize(code):
 
         if kind == "COMMENT":
             continue
-        if kind == "META":
-            # e.g. #import
+        elif kind == "META":
             tokens.append(("META_KEYWORD", value))
             continue
-        if kind == "ID":
-            # map keywords to specific token kinds
+        elif kind == "ID":
             for group_name, words in KEYWORDS.items():
                 if value in words:
-                    # produce distinct names for IO, FUNCTION, TYPE, CONTROL, META
-                    tokens.append((f"{group_name}_KEYWORD", value))
+                    kind = f"{group_name}_KEYWORD"
                     break
-            else:
-                tokens.append(("ID", value))
+        elif kind in ("SKIP", "NEWLINE"):
             continue
-        if kind in ("SKIP", "NEWLINE"):
-            continue
-        if kind == "MISMATCH":
+        elif kind == "MISMATCH":
             raise RuntimeError(f"Unexpected token: {value}")
         tokens.append((kind, value))
     tokens.append(("EOF", ""))
@@ -77,12 +70,12 @@ class CR7Parser:
         self.pos = 0
         self.output_box = output_box  # GUI output reference
 
-    def log(self, msg, tag=None):
-        """Write to GUI box if available, otherwise print to console"""
+    def log(self, msg, color=None):
+        """Helper to print or send output to GUI with color"""
         if self.output_box:
             self.output_box.configure(state="normal")
-            if tag:
-                self.output_box.insert(tk.END, msg + "\n", tag)
+            if color:
+                self.output_box.insert(tk.END, msg + "\n", color)
             else:
                 self.output_box.insert(tk.END, msg + "\n")
             self.output_box.configure(state="disabled")
@@ -93,10 +86,10 @@ class CR7Parser:
     def current_token(self):
         return self.tokens[self.pos]
 
-    def lookahead(self, k=1):
-        idx = self.pos + k
-        if idx < len(self.tokens):
-            return self.tokens[idx]
+    def lookahead(self, n=1):
+        """Safely look ahead to next token"""
+        if self.pos + n < len(self.tokens):
+            return self.tokens[self.pos + n]
         return ("EOF", "")
 
     def match(self, expected_type, expected_value=None):
@@ -129,14 +122,14 @@ class CR7Parser:
                 self.error(f"Unexpected statement start: {value}")
 
         self.log("\n[Parser] Parsing completed successfully ✅", "success")
+        messagebox.showinfo("Parsing Success", "CR7 Script parsed successfully ✅")
 
     # ----------------------------
     # META (#import stadium)
     # ----------------------------
     def parse_meta(self):
         self.match("META_KEYWORD", "#import")
-        # stadium will be returned as META_KEYWORD from KEYWORDS mapping
-        if self.current_token()[0] == "META_KEYWORD" and self.current_token()[1] == "stadium":
+        if self.current_token()[1] == "stadium":
             self.match("META_KEYWORD", "stadium")
         else:
             self.error("Expected 'stadium' after #import")
@@ -148,11 +141,10 @@ class CR7Parser:
     def parse_function(self):
         self.match("FUNCTION_KEYWORD", "play")
 
-        # function name can be ID or FUNCTION_KEYWORD (like kickoff, train)
+        # Function name can be ID or FUNCTION_KEYWORD (e.g., kickoff)
         kind, value = self.current_token()
         if kind in ("ID", "FUNCTION_KEYWORD"):
             self.pos += 1
-            func_name = value
         else:
             self.error("Expected function name after 'play'")
 
@@ -162,7 +154,7 @@ class CR7Parser:
         self.match("LBRACE")
         self.parse_statement_list()
         self.match("RBRACE")
-        self.log(f"→ Function parsed ({func_name})", "info")
+        self.log("→ Function parsed", "info")
 
     def parse_param_list(self):
         if self.current_token()[0] == "TYPE_KEYWORD":
@@ -186,16 +178,7 @@ class CR7Parser:
         if kind == "TYPE_KEYWORD":
             self.parse_declaration()
         elif kind == "ID":
-            # could be assignment or function-call-as-statement (not implemented execution-wise)
-            # accept both: ID = ... ; or ID( ... );
-            next_kind, _ = self.lookahead(1)
-            if next_kind == "ASSIGN":
-                self.parse_assignment()
-            elif next_kind == "LPAREN":
-                # function call as statement
-                self.parse_function_call_statement()
-            else:
-                self.error(f"Unexpected ID usage: {value}", kind, value)
+            self.parse_assignment()
         elif kind == "CONTROL_KEYWORD":
             if value == "referee":
                 self.parse_if()
@@ -232,19 +215,6 @@ class CR7Parser:
         self.match("END")
         self.log("→ Assignment parsed", "info")
 
-    def parse_function_call_statement(self):
-        # ID ( arglist ) ;
-        ident = self.match("ID")
-        self.match("LPAREN")
-        if self.current_token()[0] != "RPAREN":
-            self.parse_expr()
-            while self.current_token()[0] == "COMMA":
-                self.match("COMMA")
-                self.parse_expr()
-        self.match("RPAREN")
-        self.match("END")
-        self.log(f"→ Function call statement parsed ({ident})", "info")
-
     def parse_if(self):
         self.match("CONTROL_KEYWORD", "referee")
         self.match("LPAREN")
@@ -254,7 +224,7 @@ class CR7Parser:
         self.parse_statement_list()
         self.match("RBRACE")
 
-        if self.current_token()[0] == "CONTROL_KEYWORD" and self.current_token()[1] == "bench":
+        if self.current_token()[1] == "bench":
             self.match("CONTROL_KEYWORD", "bench")
             self.match("LBRACE")
             self.parse_statement_list()
@@ -274,22 +244,16 @@ class CR7Parser:
     def parse_for(self):
         self.match("CONTROL_KEYWORD", "drill")
         self.match("LPAREN")
-        # init (declaration or assignment or empty)
         if self.current_token()[0] == "TYPE_KEYWORD":
             self.parse_declaration_in_for()
-        elif self.current_token()[0] == "ID" and self.lookahead(1)[0] == "ASSIGN":
+        elif self.current_token()[0] == "ID":
             self.parse_assignment_in_for()
-        # expect semicolon
         self.match("END")
-        # condition (optional)
         if self.current_token()[0] != "END":
             self.parse_condition()
         self.match("END")
-        # update: can be assignment or ++/--
         if self.current_token()[0] == "ID":
             self.parse_assignment_in_for()
-        elif self.current_token()[0] == "OP" and self.current_token()[1] in ("++", "--"):
-            self.match("OP")
         self.match("RPAREN")
         self.match("LBRACE")
         self.parse_statement_list()
@@ -358,11 +322,11 @@ class CR7Parser:
     def parse_factor(self):
         kind, value = self.current_token()
 
-        # identifier or function call
-        if kind == "ID":
+        # Identifier or function call (ID or FUNCTION_KEYWORD)
+        if kind in ("ID", "FUNCTION_KEYWORD"):
             next_kind, _ = self.lookahead(1)
             if next_kind == "LPAREN":
-                ident = self.match("ID")
+                ident = self.match(kind)
                 self.match("LPAREN")
                 if self.current_token()[0] != "RPAREN":
                     self.parse_expr()
@@ -372,7 +336,7 @@ class CR7Parser:
                 self.match("RPAREN")
                 self.log(f"→ Function call parsed ({ident})", "info")
             else:
-                self.match("ID")
+                self.match(kind)
 
         elif kind in ("NUMBER", "STRING"):
             self.match(kind)
@@ -384,6 +348,7 @@ class CR7Parser:
 
         else:
             self.error("Invalid factor")
+
 
 # -----------------------------
 # ⚽ GUI IMPLEMENTATION
@@ -445,7 +410,7 @@ parser_label.pack()
 parser_output = scrolledtext.ScrolledText(root, width=115, height=10, font=("Consolas", 10), bg="#393E46", fg="#EEEEEE", insertbackground="white")
 parser_output.pack(padx=15, pady=10)
 
-# Add color tags (used by parser.log)
+# Add color tags
 for box in [token_output, parser_output]:
     box.tag_config("error", foreground="#FF5C5C")
     box.tag_config("success", foreground="#00FF7F")
